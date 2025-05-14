@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,7 +15,6 @@ import (
 	"github.com/lxc/incus/v6/shared/subprocess"
 
 	"github.com/lxc/incus-os/incus-osd/api"
-	"github.com/lxc/incus-os/incus-osd/internal/seed"
 )
 
 // networkdConfigFile represents a given filename and its contents.
@@ -133,7 +133,7 @@ func ApplyNetworkConfiguration(ctx context.Context, networkCfg *api.SystemNetwor
 	}
 
 	// Wait for the network to apply.
-	return waitForNetworkRoutable(ctx, networkCfg, timeout, seed.NetworkSeedExists())
+	return waitForNetworkOnline(ctx, networkCfg, timeout)
 }
 
 // waitForUdevInterfaceRename waits up to a provided timeout for udev to pickup and process
@@ -171,112 +171,88 @@ func waitForUdevInterfaceRename(ctx context.Context, timeout time.Duration) erro
 	}
 }
 
-// waitForNetworkRoutable waits up to a provided timeout for configured network interfaces,
-// bonds, and vlans to become routable.
-func waitForNetworkRoutable(ctx context.Context, networkCfg *api.SystemNetworkConfig, timeout time.Duration, requireAllRoutable bool) error {
-	isRoutable := func(name string) bool {
+// waitForNetworkOnline waits up to a provided timeout for configured network interfaces,
+// bonds, and vlans to configure their IP address(es) and come online.
+func waitForNetworkOnline(ctx context.Context, networkCfg *api.SystemNetworkConfig, timeout time.Duration) error {
+	isOnline := func(name string) bool {
 		output, err := subprocess.RunCommandContext(ctx, "networkctl", "status", name)
 		if err != nil {
 			return false
 		}
 
-		return strings.Contains(output, "State: routable")
+		return strings.Contains(output, "Online state: online")
+	}
+
+	getNumberOfIPs := func(name string) int {
+		ipAddressRegex := regexp.MustCompile(`inet6? (.+)/\d+ `)
+
+		output, err := subprocess.RunCommandContext(ctx, "ip", "address", "show", name)
+		if err != nil {
+			return -1
+		}
+
+		numIPs := 0
+		matches := ipAddressRegex.FindAllStringSubmatch(output, -1)
+
+		for _, addr := range matches {
+			// Don't count link-local address.
+			if strings.HasPrefix(addr[1], "fe80:") {
+				continue
+			}
+
+			numIPs++
+		}
+
+		return numIPs
 	}
 
 	endTime := time.Now().Add(timeout)
 
+	devicesToCheck := make(map[string]int)
+
+	for _, i := range networkCfg.Interfaces {
+		if len(i.Addresses) == 0 {
+			continue
+		}
+
+		devicesToCheck[i.Name] = len(i.Addresses)
+	}
+
+	for _, b := range networkCfg.Bonds {
+		if len(b.Addresses) == 0 {
+			continue
+		}
+
+		devicesToCheck[b.Name] = len(b.Addresses)
+	}
+
+	for _, v := range networkCfg.VLANs {
+		if len(v.Addresses) == 0 {
+			continue
+		}
+
+		devicesToCheck[v.Name] = len(v.Addresses)
+	}
+
 	for {
 		if time.Now().After(endTime) {
-			return errors.New("timed out waiting for network to become routable")
+			return errors.New("timed out waiting for network to come online")
+		}
+
+		allDevicesOnline := true
+		for name, numIPs := range devicesToCheck {
+			if !isOnline(name) || getNumberOfIPs(name) != numIPs {
+				allDevicesOnline = false
+
+				break
+			}
+		}
+
+		if allDevicesOnline {
+			return nil
 		}
 
 		time.Sleep(500 * time.Millisecond)
-
-		if len(networkCfg.Interfaces) > 0 {
-			allInterfacesRoutable := true
-			atLestOneInterfaceRoutable := false
-
-			configuredInterfaces := 0
-			for _, i := range networkCfg.Interfaces {
-				if len(i.Addresses) == 0 {
-					continue
-				}
-
-				configuredInterfaces++
-				routable := isRoutable(i.Name)
-
-				allInterfacesRoutable = allInterfacesRoutable && routable
-				atLestOneInterfaceRoutable = atLestOneInterfaceRoutable || routable
-			}
-
-			if configuredInterfaces > 0 {
-				if requireAllRoutable && !allInterfacesRoutable {
-					continue
-				}
-
-				if !requireAllRoutable && !atLestOneInterfaceRoutable {
-					continue
-				}
-			}
-		}
-
-		if len(networkCfg.Bonds) > 0 {
-			allBondsRoutable := true
-			atLestOneBondRoutable := false
-
-			configuredInterfaces := 0
-			for _, b := range networkCfg.Bonds {
-				if len(b.Addresses) == 0 {
-					continue
-				}
-
-				configuredInterfaces++
-				routable := isRoutable(b.Name)
-
-				allBondsRoutable = allBondsRoutable && routable
-				atLestOneBondRoutable = atLestOneBondRoutable || routable
-			}
-
-			if configuredInterfaces > 0 {
-				if requireAllRoutable && !allBondsRoutable {
-					continue
-				}
-
-				if !requireAllRoutable && !atLestOneBondRoutable {
-					continue
-				}
-			}
-		}
-
-		if len(networkCfg.VLANs) > 0 {
-			allVLANsRoutable := true
-			atLestOneVLANRoutable := false
-
-			configuredInterfaces := 0
-			for _, v := range networkCfg.VLANs {
-				if len(v.Addresses) == 0 {
-					continue
-				}
-
-				configuredInterfaces++
-				routable := isRoutable(v.Name)
-
-				allVLANsRoutable = allVLANsRoutable && routable
-				atLestOneVLANRoutable = atLestOneVLANRoutable || routable
-			}
-
-			if configuredInterfaces > 0 {
-				if requireAllRoutable && !allVLANsRoutable {
-					continue
-				}
-
-				if !requireAllRoutable && !atLestOneVLANRoutable {
-					continue
-				}
-			}
-		}
-
-		return nil
 	}
 }
 
@@ -444,13 +420,16 @@ func generateNetworkFileContents(networkCfg api.SystemNetworkConfig) []networkdC
 		cfgString := fmt.Sprintf(`[Match]
 Name=%s
 
+[Link]
+%s
+
 [DHCP]
 ClientIdentifier=mac
 RouteMetric=100
 UseMTU=true
 
 [Network]
-%s`, i.Name, generateNetworkSectionContents(networkCfg.DNS, networkCfg.NTP))
+%s`, i.Name, generateLinkSectionContents(i.Addresses), generateNetworkSectionContents(networkCfg.DNS, networkCfg.NTP))
 
 		cfgString += processAddresses(i.Addresses)
 
@@ -493,13 +472,16 @@ EmitLLDP=%s
 		cfgString := fmt.Sprintf(`[Match]
 Name=%s
 
+[Link]
+%s
+
 [DHCP]
 ClientIdentifier=mac
 RouteMetric=100
 UseMTU=true
 
 [Network]
-%s`, b.Name, generateNetworkSectionContents(networkCfg.DNS, networkCfg.NTP))
+%s`, b.Name, generateLinkSectionContents(b.Addresses), generateNetworkSectionContents(networkCfg.DNS, networkCfg.NTP))
 
 		cfgString += processAddresses(b.Addresses)
 
@@ -567,13 +549,16 @@ EgressUntagged=%d
 		cfgString = fmt.Sprintf(`[Match]
 Name=%s
 
+[Link]
+%s
+
 [DHCP]
 ClientIdentifier=mac
 RouteMetric=100
 UseMTU=true
 
 [Network]
-%s`, v.Name, generateNetworkSectionContents(networkCfg.DNS, networkCfg.NTP))
+%s`, v.Name, generateLinkSectionContents(v.Addresses), generateNetworkSectionContents(networkCfg.DNS, networkCfg.NTP))
 
 		cfgString += processAddresses(v.Addresses)
 
@@ -604,11 +589,11 @@ func processAddresses(addresses []string) string {
 	acceptIPv6RA := false
 	for _, addr := range addresses {
 		switch addr {
-		case "dhcp4":
+		case "dhcp4": //nolint:goconst
 			hasDHCP4 = true
 		case "dhcp6":
 			hasDHCP6 = true
-		case "slaac":
+		case "slaac": //nolint:goconst
 			acceptIPv6RA = true
 
 		default:
@@ -724,4 +709,38 @@ func generateBridgeVLANContents(bridgeName string, specificVLAN int, additionalV
 	}
 
 	return ret
+}
+
+func generateLinkSectionContents(addresses []string) string {
+	if len(addresses) == 0 {
+		return "RequiredForOnline=no"
+	}
+
+	expectsIPv4 := false
+	expectsIPv6 := false
+	for _, addr := range addresses {
+		switch addr {
+		case "dhcp4":
+			expectsIPv4 = true
+		case "dhcp6", "slaac":
+			expectsIPv6 = true
+
+		default:
+			if strings.Contains(addr, ".") {
+				expectsIPv4 = true
+			}
+
+			if strings.Contains(addr, ":") {
+				expectsIPv6 = true
+			}
+		}
+	}
+
+	if expectsIPv4 && expectsIPv6 {
+		return "RequiredForOnline=yes\nRequiredFamilyForOnline=both"
+	} else if expectsIPv4 {
+		return "RequiredForOnline=yes\nRequiredFamilyForOnline=ipv4"
+	}
+
+	return "RequiredForOnline=yes\nRequiredFamilyForOnline=ipv6"
 }
