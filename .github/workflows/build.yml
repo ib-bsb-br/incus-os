@@ -71,8 +71,6 @@ jobs:
           echo "EOF" >> $GITHUB_ENV
 
       - name: Build Images
-        env:
-          PATH: "${{ runner.tool_cache }}/go/1.24.3/x64/bin:/root/.local/bin:${{ env.PATH }}"
         run: |
           set -e
           printf '#!/bin/sh\necho %s\n' "${GITHUB_REF_NAME}" > mkosi.version
