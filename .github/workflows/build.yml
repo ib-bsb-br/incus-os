@@ -14,12 +14,7 @@ jobs:
       fail-fast: false
     timeout-minutes: 45
     runs-on:
-      - self-hosted
-      - cpu-4
-      - mem-4G
-      - disk-100G
-      - arch-amd64
-      - image-debian-12
+      - ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
