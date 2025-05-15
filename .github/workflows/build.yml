@@ -37,7 +37,9 @@ jobs:
             make \
             parted \
             pipx \
-            qemu-utils
+            qemu-utils \
+            build-essential \
+            debhelper-compat
 
       - name: Setup Incus
         run: |
