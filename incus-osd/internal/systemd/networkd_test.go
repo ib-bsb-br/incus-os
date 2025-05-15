@@ -397,15 +397,15 @@ func TestNetworkFileGeneration(t *testing.T) {
 	cfgs := generateNetworkFileContents(networkCfg)
 	require.Len(t, cfgs, 10)
 	require.Equal(t, "20-san1.network", cfgs[0].Name)
-	require.Equal(t, "[Match]\nName=san1\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nLinkLocalAddressing=ipv6\nAddress=10.0.101.10/24\nAddress=fd40:1234:1234:101::10/64\nIPv6AcceptRA=false\n", cfgs[0].Contents)
+	require.Equal(t, "[Match]\nName=san1\n\n[Link]\nRequiredForOnline=yes\nRequiredFamilyForOnline=both\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nLinkLocalAddressing=ipv6\nAddress=10.0.101.10/24\nAddress=fd40:1234:1234:101::10/64\nIPv6AcceptRA=false\n", cfgs[0].Contents)
 	require.Equal(t, "20-enaabbccddee01.network", cfgs[1].Name)
 	require.Equal(t, "[Match]\nName=enaabbccddee01\n\n[Network]\nBridge=san1\nLLDP=false\nEmitLLDP=false\n", cfgs[1].Contents)
 	require.Equal(t, "20-san2.network", cfgs[2].Name)
-	require.Equal(t, "[Match]\nName=san2\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nLinkLocalAddressing=ipv6\nAddress=10.0.102.10/24\nAddress=fd40:1234:1234:102::10/64\nIPv6AcceptRA=false\n", cfgs[2].Contents)
+	require.Equal(t, "[Match]\nName=san2\n\n[Link]\nRequiredForOnline=yes\nRequiredFamilyForOnline=both\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nLinkLocalAddressing=ipv6\nAddress=10.0.102.10/24\nAddress=fd40:1234:1234:102::10/64\nIPv6AcceptRA=false\n", cfgs[2].Contents)
 	require.Equal(t, "20-enaabbccddee02.network", cfgs[3].Name)
 	require.Equal(t, "[Match]\nName=enaabbccddee02\n\n[Network]\nBridge=san2\nLLDP=false\nEmitLLDP=false\n\n[BridgeVLAN]\nVLAN=10\n", cfgs[3].Contents)
 	require.Equal(t, "21-management.network", cfgs[4].Name)
-	require.Equal(t, "[Match]\nName=management\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nLinkLocalAddressing=ipv6\nAddress=10.0.100.10/24\nAddress=fd40:1234:1234:100::10/64\nIPv6AcceptRA=false\n\n[Route]\nGateway=10.0.100.1\nDestination=0.0.0.0/0\n\n[Route]\nGateway=fd40:1234:1234:100::1\nDestination=::/0\n", cfgs[4].Contents)
+	require.Equal(t, "[Match]\nName=management\n\n[Link]\nRequiredForOnline=yes\nRequiredFamilyForOnline=both\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nLinkLocalAddressing=ipv6\nAddress=10.0.100.10/24\nAddress=fd40:1234:1234:100::10/64\nIPv6AcceptRA=false\n\n[Route]\nGateway=10.0.100.1\nDestination=0.0.0.0/0\n\n[Route]\nGateway=fd40:1234:1234:100::1\nDestination=::/0\n", cfgs[4].Contents)
 	require.Equal(t, "21-bnaabbccddee03.network", cfgs[5].Name)
 	require.Equal(t, "[Match]\nName=bnaabbccddee03\n\n[Network]\nBridge=management\n\n[BridgeVLAN]\nPVID=100\nEgressUntagged=100\n\n[BridgeVLAN]\nVLAN=100\n\n[BridgeVLAN]\nVLAN=1234\n", cfgs[5].Contents)
 	require.Equal(t, "21-bnaabbccddee03-dev0.network", cfgs[6].Name)
@@ -415,7 +415,7 @@ func TestNetworkFileGeneration(t *testing.T) {
 	require.Equal(t, "22-vluplink.network", cfgs[8].Name)
 	require.Equal(t, "[Match]\nName=vluplink\n\n[Network]\nBridge=management\n\n[BridgeVLAN]\nVLAN=1234\nPVID=1234\nEgressUntagged=1234\n", cfgs[8].Contents)
 	require.Equal(t, "22-uplink.network", cfgs[9].Name)
-	require.Equal(t, "[Match]\nName=uplink\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nLinkLocalAddressing=ipv6\nIPv6AcceptRA=false\nDHCP=ipv4\n\n[Route]\nGateway=_dhcp4\nDestination=0.0.0.0/0\n", cfgs[9].Contents)
+	require.Equal(t, "[Match]\nName=uplink\n\n[Link]\nRequiredForOnline=yes\nRequiredFamilyForOnline=ipv4\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nLinkLocalAddressing=ipv6\nIPv6AcceptRA=false\nDHCP=ipv4\n\n[Route]\nGateway=_dhcp4\nDestination=0.0.0.0/0\n", cfgs[9].Contents)
 
 	// Test second config .network file generation.
 	networkCfg = api.SystemNetworkConfig{}
@@ -425,7 +425,7 @@ func TestNetworkFileGeneration(t *testing.T) {
 	cfgs = generateNetworkFileContents(networkCfg)
 	require.Len(t, cfgs, 2)
 	require.Equal(t, "20-management.network", cfgs[0].Name)
-	require.Equal(t, "[Match]\nName=management\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nLinkLocalAddressing=ipv6\nIPv6AcceptRA=true\nDHCP=ipv4\n\n[Route]\nGateway=_dhcp4\nDestination=0.0.0.0/0\n\n[Route]\nGateway=_ipv6ra\nDestination=::/0\n", cfgs[0].Contents)
+	require.Equal(t, "[Match]\nName=management\n\n[Link]\nRequiredForOnline=yes\nRequiredFamilyForOnline=both\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nLinkLocalAddressing=ipv6\nIPv6AcceptRA=true\nDHCP=ipv4\n\n[Route]\nGateway=_dhcp4\nDestination=0.0.0.0/0\n\n[Route]\nGateway=_ipv6ra\nDestination=::/0\n", cfgs[0].Contents)
 	require.Equal(t, "20-enaabbccddee01.network", cfgs[1].Name)
 	require.Equal(t, "[Match]\nName=enaabbccddee01\n\n[Network]\nBridge=management\nLLDP=false\nEmitLLDP=false\n", cfgs[1].Contents)
 
@@ -437,7 +437,7 @@ func TestNetworkFileGeneration(t *testing.T) {
 	cfgs = generateNetworkFileContents(networkCfg)
 	require.Len(t, cfgs, 2)
 	require.Equal(t, "20-eth0.network", cfgs[0].Name)
-	require.Equal(t, "[Match]\nName=eth0\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nDomains=example.org\nDNS=ns1.example.org\nDNS=ns2.example.org\nNTP=pool.ntp.example.org\nNTP=10.10.10.10\nLinkLocalAddressing=ipv6\nIPv6AcceptRA=false\nDHCP=ipv4\n", cfgs[0].Contents)
+	require.Equal(t, "[Match]\nName=eth0\n\n[Link]\nRequiredForOnline=yes\nRequiredFamilyForOnline=ipv4\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nDomains=example.org\nDNS=ns1.example.org\nDNS=ns2.example.org\nNTP=pool.ntp.example.org\nNTP=10.10.10.10\nLinkLocalAddressing=ipv6\nIPv6AcceptRA=false\nDHCP=ipv4\n", cfgs[0].Contents)
 	require.Equal(t, "20-enffeeddccbbaa.network", cfgs[1].Name)
 	require.Equal(t, "[Match]\nName=enffeeddccbbaa\n\n[Network]\nBridge=eth0\nLLDP=false\nEmitLLDP=false\n", cfgs[1].Contents)
 
@@ -449,7 +449,7 @@ func TestNetworkFileGeneration(t *testing.T) {
 	cfgs = generateNetworkFileContents(networkCfg)
 	require.Len(t, cfgs, 6)
 	require.Equal(t, "21-uplink.network", cfgs[0].Name)
-	require.Equal(t, "[Match]\nName=uplink\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nLinkLocalAddressing=no\nConfigureWithoutCarrier=yes\nIPv6AcceptRA=false\n", cfgs[0].Contents)
+	require.Equal(t, "[Match]\nName=uplink\n\n[Link]\nRequiredForOnline=no\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nLinkLocalAddressing=no\nConfigureWithoutCarrier=yes\nIPv6AcceptRA=false\n", cfgs[0].Contents)
 	require.Equal(t, "21-bnaabbccddeee1.network", cfgs[1].Name)
 	require.Equal(t, "[Match]\nName=bnaabbccddeee1\n\n[Network]\nBridge=uplink\n\n[BridgeVLAN]\nVLAN=10\n", cfgs[1].Contents)
 	require.Equal(t, "21-bnaabbccddeee1-dev0.network", cfgs[2].Name)
@@ -459,5 +459,5 @@ func TestNetworkFileGeneration(t *testing.T) {
 	require.Equal(t, "22-vlmanagement.network", cfgs[4].Name)
 	require.Equal(t, "[Match]\nName=vlmanagement\n\n[Network]\nBridge=uplink\n\n[BridgeVLAN]\nVLAN=10\nPVID=10\nEgressUntagged=10\n", cfgs[4].Contents)
 	require.Equal(t, "22-management.network", cfgs[5].Name)
-	require.Equal(t, "[Match]\nName=management\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nLinkLocalAddressing=ipv6\nIPv6AcceptRA=true\nDHCP=ipv4\n", cfgs[5].Contents)
+	require.Equal(t, "[Match]\nName=management\n\n[Link]\nRequiredForOnline=yes\nRequiredFamilyForOnline=both\n\n[DHCP]\nClientIdentifier=mac\nRouteMetric=100\nUseMTU=true\n\n[Network]\nLinkLocalAddressing=ipv6\nIPv6AcceptRA=true\nDHCP=ipv4\n", cfgs[5].Contents)
 }
