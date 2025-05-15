@@ -1,11 +1,12 @@
 name: Build
+
 on:
   push:
     tags:
-      - '*'
+      - '*' # Trigger on any tag push
 
 permissions:
-  contents: write
+  contents: write # Needed to create releases and upload assets
 
 jobs:
   image-build:
@@ -24,15 +25,17 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version: stable # Uses the latest stable Go version. Go tools will be added to PATH.
 
       # 3. Fix file ownership
+      # Ensures the runner user owns the checked-out files, which can be important after actions/checkout.
       - name: Fix repository permissions
         run: sudo chown -R "$(id -u):$(id -g)" .
 
       # 4. Install OS packages
       - name: Install dependencies
         run: |
+          set -e # Exit immediately if a command exits with a non-zero status.
           sudo apt-get update
           sudo apt-get install --yes \
             binutils debian-archive-keyring devscripts make \
@@ -41,32 +44,32 @@ jobs:
       # 5. Setup Incus & mkosi
       - name: Setup Incus
         run: |
+          set -e
           curl https://pkgs.zabbly.com/get/incus-daily | sudo sh
+          # WARNING: chmod 666 on the Incus socket is a security risk, granting broad access.
+          # Consider adding the runner user to the 'incus' group or using incus client commands that don't require direct socket write access if possible.
           sudo chmod 666 /var/lib/incus/unix.socket
           incus admin init --auto
 
       - name: Install mkosi
-        run: pipx install git+https://github.com/systemd/mkosi.git@v25.3
+        # Installs mkosi from a specific version/tag for reproducibility. Pipx will add it to PATH.
+        run: |
+          set -e
+          pipx install git+https://github.com/systemd/mkosi.git@v25.3
 
-      # 6. Validate or regenerate certificate & key
+      # 6. Validate or regenerate certificate & key for Secure Boot
       - name: Validate or Generate Secureboot Cert/Key
         id: certgen
         run: |
           set -e
-          # Check provided secret
+          # Check if SB_CERT secret is provided and is a valid certificate
           if [ -n "${{ secrets.SB_CERT }}" ] && \
-             printf '%s\n' "${{ secrets.SB_CERT }}" | openssl x509 -noout >/dev/null 2>&1
-          then
-            echo "Using provided SB_CERT & SB_KEY"
-            # Preserve exact formatting
-            cat << 'EOF' > mkosi.crt
-${{ secrets.SB_CERT }}
-EOF
-            cat << 'EOF' > mkosi.key
-${{ secrets.SB_KEY }}
-EOF
+             printf '%s\n' "${{ secrets.SB_CERT }}" | openssl x509 -noout >/dev/null 2>&1; then
+            echo "Using provided SB_CERT & SB_KEY secrets."
+            printf '%s\n' "${{ secrets.SB_CERT }}" > mkosi.crt
+            printf '%s\n' "${{ secrets.SB_KEY }}" > mkosi.key
           else
-            echo "Generating new self-signed certificate and key"
+            echo "Generating new self-signed certificate and key for Secure Boot."
             openssl req -x509 -newkey rsa:4096 \
               -keyout mkosi.key -out mkosi.crt \
               -days 365 -nodes -subj "/CN=IncusOS"
@@ -75,23 +78,33 @@ EOF
           chmod 644 mkosi.crt
           chmod 600 mkosi.key
 
-          # Export for subsequent steps
-          echo "MKOSI_CRT<<EOF" >> $GITHUB_ENV
+          # Export certificate and key content to environment variables for subsequent steps in this job.
+          # Using unique delimiters for heredocs to avoid conflicts with file content.
+          echo "MKOSI_CRT<<EOF_CERT_DELIMITER" >> $GITHUB_ENV
           cat mkosi.crt >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-          echo "MKOSI_KEY<<EOF" >> $GITHUB_ENV
+          echo "EOF_CERT_DELIMITER" >> $GITHUB_ENV
+
+          echo "MKOSI_KEY<<EOF_KEY_DELIMITER" >> $GITHUB_ENV
           cat mkosi.key >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          echo "EOF_KEY_DELIMITER" >> $GITHUB_ENV
 
       # 7. Build ISO images
       - name: Build Images
         env:
+          # WARNING: Manually setting PATH like this can be problematic and override PATH settings
+          # from 'setup-go' or 'pipx'. '${{ env.PATH }}' captures the PATH *before* setup-go/pipx modifications.
+          # It's generally recommended to rely on 'setup-go' and 'pipx' to correctly configure the PATH.
+          # If this custom PATH is essential, ensure '1.24.3' is the intended Go version and test thoroughly.
+          # Consider removing this line if Go and mkosi are found correctly from PATH setup by previous steps.
           PATH: "${{ runner.tool_cache }}/go/1.24.3/x64/bin:/root/.local/bin:${{ env.PATH }}"
         run: |
-          # version file
+          set -e
+          # Create version file using the Git tag name
           printf '#!/bin/sh\necho %s\n' "${GITHUB_REF_NAME}" > mkosi.version
+          chmod +x mkosi.version
 
-          # Use regenerated cert/key from env if needed
+          # Ensure mkosi.crt and mkosi.key are populated from environment variables
+          # (either from secrets or newly generated in the 'certgen' step)
           printf '%s\n' "${MKOSI_CRT}" > mkosi.crt
           printf '%s\n' "${MKOSI_KEY}" > mkosi.key
 
@@ -100,19 +113,30 @@ EOF
       # 8. Collect and compress artifacts
       - name: Package Artifacts
         run: |
+          set -e
           mkdir -p upload
-          mv mkosi.output/*.raw  upload/
-          mv mkosi.output/*.iso  upload/
-          mv mkosi.output/*.efi  upload/
-          mv mkosi.output/*.usr* upload/
+          # Move files, gracefully handling cases where no files of a certain type exist.
+          # 'find ... -exec mv ... || true' ensures the step doesn't fail if specific patterns yield no files.
+          find mkosi.output -name '*.raw' -exec mv -t upload/ {} + 2>/dev/null || true
+          find mkosi.output -name '*.iso' -exec mv -t upload/ {} + 2>/dev/null || true
+          find mkosi.output -name '*.efi' -exec mv -t upload/ {} + 2>/dev/null || true
+          find mkosi.output -name '*.usr*' -exec mv -t upload/ {} + 2>/dev/null || true # Matches mkosi.output.usr and mkosi.output.usr.verity
+
           cd upload
-          for file in *; do gzip -9 "$file"; done
+          # Compress files if any exist in the upload directory
+          if [ -n "$(ls -A)" ]; then # Check if directory is not empty
+            echo "Compressing artifacts..."
+            for file in *; do gzip -9 "$file"; done
+          else
+            echo "No files found in upload/ to compress."
+          fi
 
       # 9. Upload to GitHub Release
       - name: Upload binaries to release
         uses: svenstaro/upload-release-action@v2
         with:
-          file: upload/*
+          repo_token: ${{ secrets.GITHUB_TOKEN }} # GITHUB_TOKEN has permissions granted by the 'permissions' block at the job or workflow level.
+          file: upload/* # Upload all files in the upload directory
           file_glob: true
-          overwrite: true
-          release_name: ${{ github.ref_name }}
+          overwrite: true # Overwrite assets if they already exist in the release
+          tag: ${{ github.ref_name }} # Upload to the release associated with the current Git tag. This usually creates the release if it doesn't exist.
