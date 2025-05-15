@@ -10,88 +10,109 @@ permissions:
 jobs:
   image-build:
     name: Image build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
-    timeout-minutes: 45
-    runs-on:
-      - ubuntu-latest
+
     steps:
+      # 1. Checkout the repository
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Go
+      # 2. Install Go
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: stable
 
+      # 3. Fix file ownership
       - name: Fix repository permissions
-        run: |
-          sudo chown -R $(id -u):$(id -g) .
+        run: sudo chown -R "$(id -u):$(id -g)" .
 
+      # 4. Install OS packages
       - name: Install dependencies
         run: |
+          sudo apt-get update
           sudo apt-get install --yes \
-            binutils \
-            debian-archive-keyring \
-            devscripts \
-            make \
-            parted \
-            pipx \
-            qemu-utils \
-            build-essential \
-            debhelper-compat
+            binutils debian-archive-keyring devscripts make \
+            parted pipx qemu-utils build-essential debhelper-compat
 
+      # 5. Setup Incus & mkosi
       - name: Setup Incus
         run: |
           curl https://pkgs.zabbly.com/get/incus-daily | sudo sh
           sudo chmod 666 /var/lib/incus/unix.socket
           incus admin init --auto
 
-      - name: Setup mkosi
+      - name: Install mkosi
+        run: pipx install git+https://github.com/systemd/mkosi.git@v25.3
+
+      # 6. Validate or regenerate certificate & key
+      - name: Validate or Generate Secureboot Cert/Key
+        id: certgen
         run: |
-          pipx install git+https://github.com/systemd/mkosi.git@v25.3
+          set -e
+          # Check provided secret
+          if [ -n "${{ secrets.SB_CERT }}" ] && \
+             printf '%s\n' "${{ secrets.SB_CERT }}" | openssl x509 -noout >/dev/null 2>&1
+          then
+            echo "Using provided SB_CERT & SB_KEY"
+            # Preserve exact formatting
+            cat << 'EOF' > mkosi.crt
+${{ secrets.SB_CERT }}
+EOF
+            cat << 'EOF' > mkosi.key
+${{ secrets.SB_KEY }}
+EOF
+          else
+            echo "Generating new self-signed certificate and key"
+            openssl req -x509 -newkey rsa:4096 \
+              -keyout mkosi.key -out mkosi.crt \
+              -days 365 -nodes -subj "/CN=IncusOS"
+          fi
 
-      - name: Build the images
-        run: |
-          export PATH="${PATH}:/root/.local/bin"
-
-          (
-            cat << EOF
-          #!/bin/sh
-          echo ${{ github.ref_name }}
-          EOF
-          ) > mkosi.version
-
-          echo "${{ secrets.SB_CERT }}" > mkosi.crt
           chmod 644 mkosi.crt
-          echo "${{ secrets.SB_KEY }}" > mkosi.key
           chmod 600 mkosi.key
+
+          # Export for subsequent steps
+          echo "MKOSI_CRT<<EOF" >> $GITHUB_ENV
+          cat mkosi.crt >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          echo "MKOSI_KEY<<EOF" >> $GITHUB_ENV
+          cat mkosi.key >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      # 7. Build ISO images
+      - name: Build Images
+        env:
+          PATH: "${{ runner.tool_cache }}/go/1.24.3/x64/bin:/root/.local/bin:${{ env.PATH }}"
+        run: |
+          # version file
+          printf '#!/bin/sh\necho %s\n' "${GITHUB_REF_NAME}" > mkosi.version
+
+          # Use regenerated cert/key from env if needed
+          printf '%s\n' "${MKOSI_CRT}" > mkosi.crt
+          printf '%s\n' "${MKOSI_KEY}" > mkosi.key
 
           make build-iso
 
-          mkdir upload
-
-          mv mkosi.output/debug.raw upload/
-          mv mkosi.output/incus.raw upload/
-
-          mv mkosi.output/IncusOS_${{ github.ref_name }}.raw upload/IncusOS_${{ github.ref_name }}.img
-          mv mkosi.output/IncusOS_${{ github.ref_name }}.iso upload/IncusOS_${{ github.ref_name }}.iso
-          mv mkosi.output/IncusOS_${{ github.ref_name }}.efi upload/
-          mv mkosi.output/IncusOS_${{ github.ref_name }}.usr-x86-64.* upload/
-          mv mkosi.output/IncusOS_${{ github.ref_name }}.usr-x86-64-verity.* upload/
-          mv mkosi.output/IncusOS_${{ github.ref_name }}.usr-x86-64-verity-sig.* upload/
-
-      - name: Compress the files
+      # 8. Collect and compress artifacts
+      - name: Package Artifacts
         run: |
+          mkdir -p upload
+          mv mkosi.output/*.raw  upload/
+          mv mkosi.output/*.iso  upload/
+          mv mkosi.output/*.efi  upload/
+          mv mkosi.output/*.usr* upload/
           cd upload
-          for i in *; do
-            gzip -9 "${i}"
-          done
+          for file in *; do gzip -9 "$file"; done
 
+      # 9. Upload to GitHub Release
       - name: Upload binaries to release
         uses: svenstaro/upload-release-action@v2
         with:
           file: upload/*
-          overwrite: true
           file_glob: true
+          overwrite: true
           release_name: ${{ github.ref_name }}
